@@ -2,21 +2,18 @@
 #include <SPI.h>
 #include <mcp_can.h>
 #include <OneWire.h> 
+#include <OneWireExt.h>
 #include <stdio.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1351.h>
 #include "ThermosCAN.h"
 #include "Screen.h"
 
-const int DEFAULT_TARGET_TEMP_ID = 0x7FF;
-const int DEFAULT_OW_ID = 0x7FE;
+const unsigned short DEFAULT_TARGET_TEMP_CAN_ID = 0x7FF;
+const unsigned short DEFAULT_OW_CAN_ID = 0x7FE;
 
-byte count = 0;
-byte buf[1];
-short temp;
-
-int targetTemp = 210; // target temperature multipled by 10
 short owTemps[MAX_OW_DEVICES];
+byte mainOwTempIndex = 0;
 
 //  PINS
 
@@ -27,8 +24,8 @@ const int DISPLAY_DC_PIN = A2;
 const int DISPLAY_CS_PIN = A1;
 const int DISPLAY_RST_PIN = A3;
 // Trackball
-const int UP_PIN = 3;
-const int DOWN_PIN = 2;
+const int UP_PIN = 2;
+const int DOWN_PIN = 3;
 const int LEFT_PIN = 1;
 const int RIGHT_PIN = 0;
 const int BTN_PIN = 7;
@@ -36,8 +33,9 @@ const int RED_PIN = 10;
 
 OneWire oneWire(ONE_WIRE_PIN);
 byte owDevices[MAX_OW_DEVICES][OW_ADDRESS_LEN];
-int owDeviceCount = 0;
+byte owDeviceCount = 0;
 
+Config config;
 
 const unsigned long SHORT_PRESS_MILLIS = 500;
 
@@ -58,12 +56,6 @@ unsigned long millisButtonDown;
 
 const unsigned short CONFIG_VERSION = 1;
 
-struct Config {
-	unsigned short version;
-	byte mainOwAddress[8]; // Main 1-wire device address, shown on display
-	unsigned short targetTempId;
-	unsigned short owId[MAX_OW_DEVICES]; // 1-wire device ID's
-} config;
 
 volatile enum {
 	NO_CLICK,
@@ -87,8 +79,8 @@ void setup() {
 	pinMode(RED_PIN, OUTPUT);
 	attachInterrupt(digitalPinToInterrupt(UP_PIN), scrollUp, FALLING);
 	attachInterrupt(digitalPinToInterrupt(DOWN_PIN), scrollDown, FALLING);
-	attachInterrupt(digitalPinToInterrupt(LEFT_PIN), scrollLeft, CHANGE);
-	attachInterrupt(digitalPinToInterrupt(RIGHT_PIN), scrollRight, CHANGE);
+	attachInterrupt(digitalPinToInterrupt(LEFT_PIN), scrollLeft, FALLING);
+	attachInterrupt(digitalPinToInterrupt(RIGHT_PIN), scrollRight, FALLING);
 	attachInterrupt(digitalPinToInterrupt(BTN_PIN), pressButton, CHANGE);
 	EEPROM.get(0, config);
 	while (CAN_OK != CAN.begin(CAN_500KBPS, MCP_8MHz)) {
@@ -108,6 +100,7 @@ void setup() {
 		for (int i = 0; i < owDeviceCount; i++) {
 			if (memcmp(owDevices[i], config.mainOwAddress, 8) == 0) {
 				// found it
+				mainOwTempIndex = i;
 				configOk = true;
 				break; // break of of for loop
 			}
@@ -115,6 +108,9 @@ void setup() {
 	}
 	if (!configOk) {
 		initEEPROM();
+	}
+	if (config.setTemp > 25 << 4) {
+		config.setTemp = 21 << 4;
 	}
 	readTemp(millis());
 	//display.fillScreen(BLACK);
@@ -151,17 +147,9 @@ void loop() {
 		readTemp(millisNow);
 		sendTemp();
 	}
-	//if (screenState == SCREEN_SET_TEMP && millisNow - millisLedUpdated > BUTTON_LED_INTERVAL) {
-	//	analogWrite(RED_PIN, led_pwm++);
-	//	if (led_pwm > 200) {
-	//		led_pwm = 0;
-	//	}
-	//	millisLedUpdated = millisNow;
-	//} else if (screenState != SCREEN_SET_TEMP && led_pwm != 0) {
-	//	led_pwm = 0;
-	//	analogWrite(RED_PIN, led_pwm);
-	//}
+	delay(20);
 }
+
 
 void initEEPROM() {
 	Serial.println("Initializing EEPROM");
@@ -171,20 +159,15 @@ void initEEPROM() {
 	// devices are connected.
 	config.version = CONFIG_VERSION;
 	memcpy(config.mainOwAddress, owDevices[0], 8);
-	config.targetTempId = DEFAULT_TARGET_TEMP_ID;
+	mainOwTempIndex = 0;
+	config.setTempCANId = DEFAULT_TARGET_TEMP_CAN_ID;
 	for (int i = 0; i < MAX_OW_DEVICES; i++) {
-		config.owId[i] = DEFAULT_OW_ID;
+		config.owCANId[i] = DEFAULT_OW_CAN_ID;
 	}
-	EEPROM.put(0, config);
-}
-void owAddressToStr(char *str, byte *owAddress) {
-	for (int i = 0; i < 6; i++) {
-		sprintf(str + i, "%X", owAddress[OW_ADDRESS_LEN - 2 - i]);
-	}
+	saveConfig();
 }
 
 void searchDevices() {
-//	byte owAddress[8] = { 0, };
 	oneWire.reset_search();
 	owDeviceCount = 0;
 	while (oneWire.search(owDevices[owDeviceCount])) {
@@ -213,19 +196,20 @@ void readTemp(unsigned long millisNow)
 		oneWire.select(owDevices[i]);
 		oneWire.write(OW_TEMP_READ_SCRATCH);
 		oneWire.read_bytes((byte *)&owTemps[i], 2);
-		//		formatTemp(lineBuffer, owTemps[i]);
 	}
 	millisTempUpdated = millisNow;
 }
 
 void sendTemp()
-{
-	if (owDeviceCount > 0) {
-		CAN.sendMsgBuf(config.owId[0], 0, 2, (byte *)&owTemps[0]);
+{ 
+	CAN.sendMsgBuf(config.setTempCANId, 0, 2, (byte *)&config.setTemp);
+	for (int i = 0; i < owDeviceCount; i++) {
+		CAN.sendMsgBuf(config.owCANId[i], 0, 2, (byte *)&owTemps[i]);
 	}
 }
 
 void startupDisplay() {
+	setDisplayContrast(5);
 	display.fillScreen(BLACK);
 	//printChars();
 	display.setCursor(0, 50);
@@ -234,25 +218,9 @@ void startupDisplay() {
 	display.print("Initializing...");
 }
 
-
-//void refreshSetDefaultDevice() {
-//		char addressStr[OW_ADDRESS_LEN + 1];
-//		display.fillScreen(BLACK);
-//		display.setTextSize(1);
-//		display.setCursor(0, 0);
-//		//	display.print("Devices ");
-//		//	display.println(owDeviceCount);
-//		display.fillRect(0, menuSelectionItem * ROW_HEIGHT * MENU_TEXT_SIZE, SCREEN_WIDTH, ROW_HEIGHT * MENU_TEXT_SIZE, RED);
-//		for (int i = 0; i < owDeviceCount; i++) {
-//			owAddressToStr(addressStr, owDevices[i]);
-//			if (owDevices[i][0] == 0x28) {
-//				display.print("DS18B20 ");
-//			} else {
-//				display.print("Unknown ");
-//			}
-//			display.println(addressStr);
-//		}
-//}
+void setDisplayContrast(byte contrast) {
+	display.sendCommand(SSD1351_CMD_CONTRASTMASTER, &contrast, 1);
+}
 
 void scrollUp() {
 	upDown++;

@@ -28,14 +28,8 @@ const int MAGENTA = 0xF81F;
 const int YELLOW = 0xFFE0;
 const int WHITE = 0xFFFF;
 
-const int MAX_OW_DEVICES = 5;
-const int OW_ADDRESS_LEN = 8;
 
-const int OW_TEMP_READ_SCRATCH = 0xbe;
-const int OW_TEMP_CONVERT = 0x44;
-
-
-void formatTemp(char *s, short val);
+void saveConfig();
 
 class Screen
 {
@@ -83,34 +77,40 @@ struct MenuItem {
 	Screen *screen;
 };
 
-class ConfigureScreen : public Screen
-{
-public:
-	void onEnter();
-	Screen *onShortClick();
-	Screen *onUpDown(int upDown);
-protected:
-	static const int MENU_LENGTH = 1;
-	int selectedItem;
-	MenuItem menu[MENU_LENGTH] = {
-		{ "Exit", &defaultScreen }
-	};
-	void refreshScreen();
-};
-
-extern ConfigureScreen configureScreen;
-
 class SetDeviceIDScreen : public Screen
 {
 public:
 	void onEnter();
 	Screen *onShortClick();
+	Screen *onLongClick();
 	Screen *onUpDown(int upDown);
 	Screen *onLeftRight(int leftRight);
+	void setInfo(char *text, unsigned short *id);
 protected:
-	int id;
+	static const int TEXT_LEN = 20;
+	char text[TEXT_LEN];
+	int leftRight;
+	byte nibble;
+	unsigned short *configId;
+	unsigned short workId;
 	void refreshScreen();
 };
+
+extern SetDeviceIDScreen setDeviceIDScreen;
+
+class ConfigureScreen : public Screen
+{
+public:
+	void onEnter();
+	Screen *onShortClick();
+	Screen *onLongClick();
+	Screen *onUpDown(int upDown);
+protected:
+	int selectedItem;
+	void refreshScreen();
+};
+
+extern ConfigureScreen configureScreen;
 
 #endif
 
